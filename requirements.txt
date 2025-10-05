@@ -1,0 +1,13 @@
+
+---
+
+```txt
+streamlit
+langchain
+langchain-community
+chromadb
+sentence-transformers
+pdfplumber
+python-docx
+transformers
+torch
