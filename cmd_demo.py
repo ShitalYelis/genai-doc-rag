@@ -7,22 +7,29 @@ from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import Chroma
 from langchain_community.embeddings import SentenceTransformerEmbeddings
 from langchain.chains import RetrievalQA
-from langchain.llms import HuggingFacePipeline
+from langchain.prompts import PromptTemplate
+from langchain_community.llms import HuggingFacePipeline
 from transformers import pipeline
 
+# --------------------------
+# Extract text
+# --------------------------
 def extract_text(file_path: str) -> str:
     if file_path.endswith(".pdf"):
         with pdfplumber.open(file_path) as pdf:
-            return "\n".join(page.extract_text() for page in pdf.pages if page.extract_text())
+            return "\n".join(page.extract_text() or "" for page in pdf.pages)
     elif file_path.endswith(".docx"):
         doc = Document(file_path)
-        return "\n".join([para.text for para in doc.paragraphs])
+        return "\n".join(para.text for para in doc.paragraphs)
     elif file_path.endswith(".txt"):
         with open(file_path, "r", encoding="utf-8") as f:
             return f.read()
     return ""
 
-print("📤 Select documents to upload...")
+# --------------------------
+# File picker
+# --------------------------
+print("📤 Select your documents (PDF/DOCX/TXT)...")
 root = tk.Tk()
 root.withdraw()
 file_paths = filedialog.askopenfilenames(
@@ -47,37 +54,67 @@ if not texts:
     print("❌ No valid documents uploaded. Exiting.")
     exit()
 
-splitter = RecursiveCharacterTextSplitter(chunk_size=500, chunk_overlap=50)
+# --------------------------
+# Split into chunks
+# --------------------------
+splitter = RecursiveCharacterTextSplitter(chunk_size=800, chunk_overlap=100)
 chunks = []
 for t in texts:
     chunks.extend(splitter.split_text(t))
-print(f"\n📑 Created {len(chunks)} chunks")
+print(f"\n📑 Created {len(chunks)} text chunks")
 
+# --------------------------
+# Embeddings + Chroma
+# --------------------------
 embedding_model = SentenceTransformerEmbeddings(model_name="all-MiniLM-L6-v2")
 vectordb = Chroma.from_texts(chunks, embedding_model, collection_name="genai_docs")
 
-print("\n🤖 Loading LLM (distilgpt2)...")
-hf_pipeline = pipeline("text-generation", model="distilgpt2", max_new_tokens=200, temperature=0.7)
+# --------------------------
+# Load LLM (FLAN-T5 for QA)
+# --------------------------
+print("\n🤖 Loading LLM (google/flan-t5-base)...")
+hf_pipeline = pipeline(
+    "text2text-generation",
+    model="google/flan-t5-base",
+    max_new_tokens=256,
+    temperature=0.3,
+)
 llm = HuggingFacePipeline(pipeline=hf_pipeline)
+
+# --------------------------
+# Create custom prompt
+# --------------------------
+template = """
+You are a helpful assistant. 
+Use the following context from the document to answer the question accurately and concisely.
+
+Context:
+{context}
+
+Question:
+{question}
+
+Answer:
+"""
+QA_PROMPT = PromptTemplate(template=template, input_variables=["context", "question"])
 
 qa = RetrievalQA.from_chain_type(
     llm=llm,
     retriever=vectordb.as_retriever(search_kwargs={"k": 3}),
-    chain_type="stuff"
+    chain_type="stuff",
+    chain_type_kwargs={"prompt": QA_PROMPT}
 )
 
-print("\n🎯 Ask questions about your documents. Type 'exit' to quit.\n")
+# --------------------------
+# Query loop
+# --------------------------
+print("\n🎯 Ask questions about your uploaded documents. Type 'exit' to quit.\n")
 while True:
-    query = input("🔎 Your query: ")
+    query = input("🔎 Your question: ")
     if query.lower() in ["exit", "quit"]:
         print("👋 Exiting.")
         break
 
-    docs = vectordb.similarity_search(query, k=2)
-    print("\n📂 Retrieved Contexts:")
-    for i, d in enumerate(docs, 1):
-        print(f"--- Chunk {i} ---\n{d.page_content[:200]}...\n")
-
     answer = qa.run(query)
-    print("🤖 AI Answer:\n", answer)
-    print("-" * 60)
+    print("\n🤖 AI Answer:\n", answer)
+    print("-" * 80)
