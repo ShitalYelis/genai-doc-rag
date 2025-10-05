@@ -12,7 +12,7 @@ from langchain_community.llms import HuggingFacePipeline
 from transformers import pipeline
 
 # --------------------------
-# Extract text
+# Extract text from PDF, DOCX, TXT
 # --------------------------
 def extract_text(file_path: str) -> str:
     if file_path.endswith(".pdf"):
@@ -27,9 +27,9 @@ def extract_text(file_path: str) -> str:
     return ""
 
 # --------------------------
-# File picker
+# File picker (Windows dialog)
 # --------------------------
-print("📤 Select your documents (PDF/DOCX/TXT)...")
+print("📤 Select documents to process...")
 root = tk.Tk()
 root.withdraw()
 file_paths = filedialog.askopenfilenames(
@@ -55,46 +55,48 @@ if not texts:
     exit()
 
 # --------------------------
-# Split into chunks
+# Split text into chunks
 # --------------------------
-splitter = RecursiveCharacterTextSplitter(chunk_size=800, chunk_overlap=100)
+splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=100)
 chunks = []
 for t in texts:
     chunks.extend(splitter.split_text(t))
-print(f"\n📑 Created {len(chunks)} text chunks")
+print(f"\n📑 Created {len(chunks)} chunks")
 
 # --------------------------
-# Embeddings + Chroma
+# Embeddings + Chroma Vector DB
 # --------------------------
 embedding_model = SentenceTransformerEmbeddings(model_name="all-MiniLM-L6-v2")
 vectordb = Chroma.from_texts(chunks, embedding_model, collection_name="genai_docs")
 
 # --------------------------
-# Load LLM (FLAN-T5 for QA)
+# LLM (FLAN-T5-Large for better factual accuracy)
 # --------------------------
-print("\n🤖 Loading LLM (google/flan-t5-base)...")
+print("\n🤖 Loading LLM (google/flan-t5-large)...")
 hf_pipeline = pipeline(
     "text2text-generation",
-    model="google/flan-t5-base",
-    max_new_tokens=256,
-    temperature=0.3,
+    model="google/flan-t5-large",
+    max_new_tokens=512,
+    temperature=0.2,
 )
 llm = HuggingFacePipeline(pipeline=hf_pipeline)
 
 # --------------------------
-# Create custom prompt
+# Custom, strong “context-only” prompt
 # --------------------------
 template = """
-You are a helpful assistant. 
-Use the following context from the document to answer the question accurately and concisely.
+You are a precise assistant.
+You will answer **only** based on the context provided from the uploaded documents.
+If the answer is not present in the context, reply clearly with:
+"I could not find this information in the provided document."
 
-Context:
+Context from the document:
 {context}
 
 Question:
 {question}
 
-Answer:
+Answer based only on the context:
 """
 QA_PROMPT = PromptTemplate(template=template, input_variables=["context", "question"])
 
@@ -106,15 +108,24 @@ qa = RetrievalQA.from_chain_type(
 )
 
 # --------------------------
-# Query loop
+# Query Loop
 # --------------------------
 print("\n🎯 Ask questions about your uploaded documents. Type 'exit' to quit.\n")
+
 while True:
     query = input("🔎 Your question: ")
     if query.lower() in ["exit", "quit"]:
         print("👋 Exiting.")
         break
 
-    answer = qa.run(query)
-    print("\n🤖 AI Answer:\n", answer)
-    print("-" * 80)
+    # Retrieve top docs for transparency
+    docs = vectordb.similarity_search(query, k=2)
+    print("\n📂 Top relevant document snippets:\n")
+    for i, d in enumerate(docs, 1):
+        print(f"[{i}] {d.page_content[:250]}...\n")
+
+    # Modern LangChain call
+    result = qa.invoke({"query": query})
+
+    print("\n🤖 AI Answer:\n", result["result"])
+    print("-" * 100)
